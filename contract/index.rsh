@@ -3,10 +3,12 @@
 const Player = {
   ...hasRandom,
   getNum: Fun([], UInt),
-  seeOutcome: Fun([UInt], Null),
+  seeOutcome: Fun([Bool], Null),
   informTimeout: Fun([], Null),
   getRandom: Fun([], UInt),
   showNum: Fun([UInt], Null),
+  seeSmallOutcome: Fun([Bool], Null),
+  showTarget: Fun([UInt], Null),
 };
 
 export const main = Reach.App(() => {
@@ -14,10 +16,13 @@ export const main = Reach.App(() => {
     ...Player,
     wager: UInt, // atomic units of currency
     deadline: UInt, // time delta (blocks/rounds)
+    getTarget: Fun([], UInt),
+    // Alice确定几轮获胜
+    getRound: Fun([], UInt),
   });
   const Bob   = Participant('Bob', {
     ...Player,
-    acceptWager: Fun([UInt], Null),
+    acceptWager: Fun([UInt, UInt], Null),
   });
   init();
 
@@ -30,95 +35,61 @@ export const main = Reach.App(() => {
   Alice.only(() => {
     const wager = declassify(interact.wager);
     const deadline = declassify(interact.deadline);
+    const round = declassify(interact.getRound());
   });
-  Alice.publish(wager, deadline)
+  Alice.publish(wager, deadline, round)
     .pay(wager);
   commit();
 
   Bob.only(() => {
-    interact.acceptWager(wager);
+    interact.acceptWager(wager, round);
   });
   Bob.pay(wager)
     .timeout(relativeTime(deadline), () => closeTo(Alice, informTimeout));
-  commit();
 
   // 准备阶段完成
-  Alice.only(() => {
-    const numAlice = declassify(interact.getNum());
-  });
-  Alice.publish(numAlice)
-    .timeout(relativeTime(deadline), () => closeTo(Bob, informTimeout));
-  commit();
-
-  Bob.only(() => {
-    const numBob = declassify(interact.getNum());
-  });
-  Bob.publish(numBob)
-    .timeout(relativeTime(deadline), () => closeTo(Alice, informTimeout));
-  commit();
-
-  // 计算最终数字
-  Alice.only(() => {
-    const randAlice = declassify(interact.getRandom());
-    const finalAlice = numAlice + randAlice;
-    interact.showNum(finalAlice);
-  });
-  Alice.publish(finalAlice)
-    .timeout(relativeTime(deadline), () => closeTo(Bob, informTimeout));
-  commit();
-
-  Bob.only(() => {
-    const randBob = declassify(interact.getRandom());
-    const finalBob = numBob + randBob;
-    interact.showNum(finalBob);
-  });
-  Bob.publish(finalBob)
-    .timeout(relativeTime(deadline), () => closeTo(Alice, informTimeout));
-
-  // 情况分类比较
-  // 只有一位大于10
-  if(finalAlice > 10 && finalBob <= 10) {
-    transfer(wager * 2).to(Bob);
-    each([Alice, Bob], () => {
-        interact.seeOutcome(2);
+  var [pointAlice, pointBob] = [0, 0];
+  invariant(balance() == 2 * wager);
+  while (pointAlice < round && pointBob < round) {
+    commit();
+    Alice.only(() => {
+      const numAlice = declassify(interact.getNum());
     });
-  }else if(finalAlice <= 10 && finalBob > 10) {
-    transfer(wager * 2).to(Alice);
-    each([Alice, Bob], () => {
-        interact.seeOutcome(0);    
+    Alice.publish(numAlice);
+    commit();
+
+    Bob.only(() => {
+      const numBob = declassify(interact.getNum());
     });
-  }
-  // 都小于10，比谁的近
-  else if(finalAlice <= 10 && finalBob <= 10) {
-    const distanceAlice = 10 - finalAlice;
-    const distanceBob = 10 - finalBob;
-    
-    if(distanceAlice < distanceBob) {
-        transfer(wager * 2).to(Alice);
-        each([Alice, Bob], () => {
-            interact.seeOutcome(0);
-        });
-    }else if(distanceAlice > distanceBob) {
-        transfer(wager * 2).to(Bob);
-        each([Alice, Bob], () => {
-            interact.seeOutcome(2);
-        });
-    }else {
-        transfer(wager).to(Alice);
-        transfer(wager).to(Bob);
-        each([Alice, Bob], () => {
-            interact.seeOutcome(1);
-        });
-    }
-  }
-  // 都大于10，平局
-  else {
-    transfer(wager).to(Alice);
-    transfer(wager).to(Bob);
+    Bob.publish(numBob);
+    commit();
+
+    Alice.only(() => {
+      const target = declassify(interact.getTarget());
+    });
+    Alice.publish(target);
+
+    const tempA = int(Pos, numAlice);
+    const tempB = int(Pos, numBob);
+    const tempTarget = int(Pos, target);
+
+    const DistanceA = abs(isub(tempA, tempTarget));
+    const DistanceB = abs(isub(tempB, tempTarget));
+
     each([Alice, Bob], () => {
-        interact.seeOutcome(1);    
-    });  
+      interact.showTarget(target);
+      interact.seeSmallOutcome(DistanceA <= DistanceB);
+    });
+
+    [pointAlice, pointBob] = DistanceA <= DistanceB ? [pointAlice + 1, pointBob] : [pointAlice, pointBob + 1];
+    continue;
   }
+  const AliceWin = pointAlice > pointBob;
+
+  transfer(wager * 2).to(AliceWin ? Alice : Bob);
   commit();
-  
+
+  each([Alice, Bob], () => {
+    interact.seeOutcome(AliceWin);
+  });
 }); 
